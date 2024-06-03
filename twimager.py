@@ -564,8 +564,8 @@ if __name__ == "__main__":
                 os.makedirs(opt_dest_hr, exist_ok=True)
                 os.makedirs(opt_dest_lr, exist_ok=True)
 
-    hr_hash_file = os.path.join(os.getcwd(), f"twimager_{HASH_SIZE}_{os.path.basename(opt_hr)}.pickle")
-    lr_hash_file = os.path.join(os.getcwd(), f"twimager_{HASH_SIZE}_{os.path.basename(opt_lr)}.pickle")
+    hr_hash_file = os.path.join(os.getcwd(), f"twimager_{os.path.basename(opt_hr)}.pickle")
+    lr_hash_file = os.path.join(os.getcwd(), f"twimager_{os.path.basename(opt_lr)}.pickle")
 
     hr_items = {}
     lr_items = {}
