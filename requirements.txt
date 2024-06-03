@@ -1,0 +1,6 @@
+imagehash~=4.3.1
+numpy~=1.26.4
+opencv-python~=4.9.0.80
+scipy~=1.13.0
+tqdm~=4.66.4
+vptree~=1.3
