@@ -25,10 +25,13 @@ pip install -r requirements.txt
 python twimager.py --lr <path to lr (reference) images folder> --hr <path to hr (target) images folder> --dest <path to destination folder>
 ```
 
+To see all available options in the command line, use `python twimager.py -h`
+
 ### Options
 
 | Argument | Description |
 |:-|:-|
+| &#x2011;h | Shows the options in the command line |
 | &#x2011;&#x2011;hr | Path to folder containing HR (target) images |
 | &#x2011;&#x2011;lr | Path to folder containing LR (reference) images which to align the HR image to |
 | &#x2011;&#x2011;dest | Path to folder where images should be written. |
