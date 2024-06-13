@@ -8,20 +8,9 @@ import vptree
 import cv2
 import numpy as np
 from tqdm import tqdm
-from PIL import Image
-#import scipy.fftpack
-from imagehash import phash, dhash, average_hash
-
-# A hash size of 8 is in most cases enough to identify image matches # and
-# to check if alignment it successful. It'll only potentially fail when there
-# are two images which are already very similar.
-HASH_SIZE = 8
-HASH_SIZE_ALIGNED = 32
-
-# Use hamming distance 14 to catch images which are event remotely similar
-# and distance 10 when doing the comparison between the paired and aligned image
-DISTANCE_THRESHOLD_MATCH = 15
-DISTANCE_THRESHOLD_ALIGNED = 60
+from PIL import Image, ImageFilter
+from imagehash import phash
+import json
 
 def ask(question, default=False):
     while True:
@@ -44,16 +33,10 @@ def color_transfer(target=None, reference=None):
 
     return img_arr_out.astype("uint8")
 
-def create_hash(image, hash_size=4, hash_type="phash"):
+def create_hash(image, hash_size=4, blur=False):
     try: 
-        if hash_type == "phash":
-            return phash(Image.fromarray(image), hash_size)
-        elif hash_type == "dhash":
-            return dhash(Image.fromarray(image), hash_size)
-        elif hash_type == "average_hash":
-            return average_hash(Image.fromarray(image), hash_size)
-        else:
-            return None
+        image = Image.fromarray(image).filter(ImageFilter.GaussianBlur(4)) if blur else Image.fromarray(image)
+        return phash(image, hash_size)
     except Exception:
         return None
 
@@ -62,7 +45,7 @@ def hamming_distance(a, b):
 
 def load_image(file):
     try:
-        return cv2.imdecode(np.fromfile(file, dtype=np.uint8), cv2.IMREAD_UNCHANGED)[:,:,:3]
+        return cv2.imdecode(np.fromfile(file, dtype=np.uint8), cv2.IMREAD_UNCHANGED)[..., :3]
     except Exception:
         return None
 
@@ -81,7 +64,7 @@ def crop_image(image, scale=1.0):
 
     return image
 
-def process_file(file, target_list, cut=False):
+def process_file(file, target_list, cut=False, blur=False):
     image = load_image(file)
     if image is None:
         return
@@ -95,12 +78,12 @@ def process_file(file, target_list, cut=False):
         # this helps with finding HR images which are taller or wider than the LR image.
         if ratio < 0.75: #0.75:
             offset = int((height - width) * 0.5)
-            hash = create_hash(image[offset:offset+width, 0:width], HASH_SIZE)
+            hash = create_hash(image[offset:offset+width, 0:width], HASH_SIZE, blur)
             if hash:
                 target_list[hash] = os.path.basename(file)
         elif ratio > 1.35: #1.25:
             offset = int((width - height) * 0.5)
-            hash = create_hash(image[0:height, offset:offset+height], HASH_SIZE)
+            hash = create_hash(image[0:height, offset:offset+height], HASH_SIZE, blur)
             if hash:
                 target_list[hash] = os.path.basename(file)
 
@@ -109,46 +92,62 @@ def process_file(file, target_list, cut=False):
         target_list[hash] = os.path.basename(file)
 
 def find_image_match(hr_hash):
+    report = None
     results = lr_tree.get_all_in_range(hr_hash, DISTANCE_THRESHOLD_MATCH)
 
     if not results:
-        return 0
-
-    result = min(results, key=lambda x: x[0])
+        return 0, report
 
     hr_file = hr_items[hr_hash]
-    hr_image = load_image(os.path.join(opt_hr, hr_file))
+    hr_image = load_image(os.path.join(opt_hr, hr_items[hr_hash]))
     if hr_image is None:
-        return 0
+        return 0, report
 
-    match_distance = result[0]
+    previous_distance = None
+    aligned_hr_image = None
+    aligned_lr_image = None
 
-    lr_hash = result[1]
-    lr_file = lr_items[lr_hash]
-    lr_image = load_image(os.path.join(opt_lr, lr_file))
-    if lr_image is None:
-        return 0
+    for result in results:
+        lr_hash = result[1]
+        lr_file = lr_items[lr_hash]
+        lr_image = load_image(os.path.join(opt_lr, lr_file))
+        if lr_image is None:
+            continue
 
-    #if opt_crop:
-    #    lr_image = crop_image(lr_image)
+        if opt_crop:
+            lr_image = crop_image(lr_image)
 
-    hr_image = align_image(hr_image, lr_image, opt_scale, opt_method)
-    if hr_image is None:
-        return 0
+        hr_image_aligned = align_image(hr_image, lr_image, opt_scale, opt_method)
+        if hr_image_aligned is None:
+            continue
 
-    aligned_distance = hamming_distance(
-        create_hash(lr_image, HASH_SIZE_ALIGNED, "phash"),
-        create_hash(hr_image, HASH_SIZE_ALIGNED, "phash")
-    )
+        aligned_distance = hamming_distance(
+            create_hash(lr_image, HASH_SIZE_ALIGNED, True),
+            create_hash(hr_image_aligned, HASH_SIZE_ALIGNED)
+        )
 
-    if opt_crop:
-        lr_image = crop_image(lr_image)
-        hr_image = crop_image(hr_image, opt_scale)
+        if aligned_distance > DISTANCE_THRESHOLD_ALIGNED:
+            continue
 
-    height, width = lr_image.shape[:2]
+        if previous_distance and aligned_distance > previous_distance:
+            continue
 
-    if aligned_distance > DISTANCE_THRESHOLD_ALIGNED:
-        return 0
+        previous_distance = aligned_distance
+
+        aligned_hr_image = hr_image_aligned
+        aligned_hr_file = hr_file
+
+        aligned_lr_image = lr_image
+        aligned_lr_file = lr_file
+
+    if aligned_hr_image is None or aligned_lr_image is None:
+        return 0, report
+
+    hr_image = color_transfer(aligned_hr_image, aligned_lr_image) if opt_color_transfer and not opt_dry else aligned_hr_image
+    hr_file = aligned_hr_file
+
+    lr_image = aligned_lr_image
+    lr_file = aligned_lr_file
 
     if opt_debug:
         height, width = hr_image.shape[:2]
@@ -179,12 +178,9 @@ def find_image_match(hr_hash):
             raise KeyboardInterrupt
         elif key == 10 or key == 3014656: # n or del
             cv2.destroyAllWindows()
-            return 0
+            return 0, report
 
         cv2.destroyAllWindows()
-
-    if opt_color_transfer:
-        hr_image = color_transfer(hr_image, lr_image)
 
     if opt_filename == "hr":
         lr_dest_name = hr_dest_name = os.path.splitext(hr_file)[0]
@@ -214,7 +210,15 @@ def find_image_match(hr_hash):
         if opt_output in ("lr", "all"):
             cv2.imencode(".png", lr_image)[1].tofile(lr_dest_path)
 
-    return 1
+        if opt_report:
+            if opt_output == "all":
+               report = (hr_dest_path, lr_dest_path)
+            elif opt_output == "hr":
+               report = (hr_dest_path, os.path.join(opt_lr, lr_file))
+            elif opt_output == "lr":
+               report = (os.path.join(opt_hr, hr_file), lr_dest_path)
+
+    return 1, report
 
 def align_image(src, dst, scale=1.0, method="transform"):
     matcher = cv2.BFMatcher(cv2.NORM_L1, crossCheck=False)
@@ -223,7 +227,7 @@ def align_image(src, dst, scale=1.0, method="transform"):
     # The match point limit is low since sometimes four is all that's needed align an image. if the
     # alignment doesn't work the image should be it should be filtered out when doing the perceptual
     # match between the aligned images
-    MIN_MATCH_POINTS = 8
+    MIN_MATCH_POINTS = 4
     GOOD_MATCH_PERCENT = 0.7
 
     src_height, src_width = src.shape[:2]
@@ -232,13 +236,13 @@ def align_image(src, dst, scale=1.0, method="transform"):
     dst_height, dst_width = dst.shape[:2]
     dst_min_size = min(dst_width, dst_height)
 
-    # Using full sized images while doing the matching will take an unnecessarily long time with no real benefit
-    # when it comes to the amount of points matched. So if it's shorter side of the image is more than 512 pixels
-    # we'll shrink it down before doing the matching.
-    RESIZE = 512 #min([480, src_width, src_height, dst_width, dst_height]) #480 #512
+    # Using full sized images while doing the matching will take an unnecessarily long time with
+    # no real benefit when it comes to the amount of points matched. So if it's shorter side of the
+    # image is more than 512 pixels we'll shrink it down before doing the matching.
+    RESIZE = 512
 
-    SRC_RESIZE = min(RESIZE, src_min_size) #RESIZE if min(src_width, src_height) > RESIZE else min(src_width, src_height)
-    DST_RESIZE = min(RESIZE, dst_min_size) #RESIZE if min(dst_width, dst_height) > RESIZE else min(dst_width, dst_height)
+    SRC_RESIZE = min(RESIZE, src_min_size)
+    DST_RESIZE = min(RESIZE, dst_min_size)
 
     # Resize the intermediate images. If scale is 1.0 increase the size slightly to to avoid aliasing when transforming
     # or warping the image
@@ -365,6 +369,16 @@ if __name__ == "__main__":
         choices=["lr", "hr", "all"]
     )
     parser.add_argument(
+        "--threshold",
+        help="Aligned image match threshold (25-100), if the perceptual distance between the LR and aligned HR image is below the threshold it won't be saved (default: 90)\n\n" +
+             "The default value should work for most scenarios. But if the LR and/or HR images contains a lot of noise, lowering it might help.\n" + 
+             "Please note that setting the threshold too low might cause some aligned images to falsly be deemed successful.\n\n",
+        required=False,
+        type=int,
+        default=90,
+        metavar="[25-100]"
+    )
+    parser.add_argument(
         "--scale",
         help="Aligned image scale. The size of aligned HR images will be a multiplier of SCALE and the matched LR image size (default: 2.0)",
         required=False,
@@ -373,10 +387,10 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--crop",
-        help="Crop the images after aligning. The crop is based on the LR size image and scaled according to SCALE when cropping the HR image\n" +
+        help="Crop the LR image before aligning.\n" +
             "- Use \"--crop 10\" and 10 pixels will be removed around the image.\n" +
             "- Use \"--crop 640 480\" and the image will be cropped to 640 width and 480 height from the center.\n" +
-            "- Use \"--crop 10 20 400\" 300 and the image will be cropped to 400 width and 300 height starting 10 pixels from the left of the image and 20 pixels from the top.\n\n",
+            "- Use \"--crop 10 20 400\" 300 and the image will be cropped to 400 width and 300 height starting 10 pixels from the top of the image and 20 pixels from the left.\n\n",
         required=False,
         type=int,
         default=False,
@@ -439,6 +453,13 @@ if __name__ == "__main__":
         default=False
     )
     parser.add_argument(
+        "--report",
+        help="Save a report in the destination folder, the report can be used by twimager-review.",
+        action="store_true",
+        required=False,
+        default=False
+    )
+    parser.add_argument(
         "--debug",
         help="Bring up a window showing the results when image alignment is successful. Press \"esc\" to abort the alignment process and \"n\" or \"del\" to skip the image. Pressing any other key will accept. Threading will be disabled when this option is used",
         action="store_true",
@@ -447,7 +468,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--dry",
-        help="Dry run - Match or align images but dont write any output.",
+        help="Dry run. No images will be written. Only find matching images and attempt to align them.",
         action="store_true",
         required=False,
         default=False
@@ -462,6 +483,11 @@ if __name__ == "__main__":
     opt_hr = os.path.abspath(args.hr)
 
     opt_output = args.output
+
+    if args.threshold < 25 or args.threshold > 100:
+        parser.error("Threshold value can't be below 25 or above 100, please adjust it.")
+
+    opt_threshold = args.threshold
 
     opt_dest = os.path.abspath(args.dest) if args.dest else None
     opt_dest_lr = os.path.join(opt_dest, "LR") if opt_output == "all" else opt_dest
@@ -496,6 +522,7 @@ if __name__ == "__main__":
 
     opt_color_transfer = args.color_transfer
     opt_save = args.save
+    opt_report = args.report
     opt_debug = args.debug
     opt_limit = args.limit
 
@@ -511,29 +538,39 @@ if __name__ == "__main__":
         opt_suffix_string = args.suffix
 
     opt_dry = args.dry
+    if opt_dry and opt_report:
+        print("Running --dry together with --report isn't supported, report will be disabled...")
+        opt_report = False
 
     if not opt_dry and not opt_dest:
-        parser.error("--dest is required if --dry is missing")
+        parser.error("--dest is required unless --dry is used")
 
-    SPACING = 35
+    SPACING = 20
 
-    print("Path to HR images".ljust(SPACING), args.hr)
-    print("Path to LR images".ljust(SPACING), args.lr)
-    print("Destination path".ljust(SPACING), args.dest)
-    print("Output".ljust(SPACING), {"hr": "hr (HR Images)", "lr": "lr (LR images)", "all": "all (LR and HR images)"}[args.output])
-    print("Scale".ljust(SPACING), args.scale)
-    print("Crop".ljust(SPACING), args.crop)
-    print("Method".ljust(SPACING), args.method)
-    print("Color transfer".ljust(SPACING), args.color_transfer)
-    print("Filename".ljust(SPACING), {"hr": "Use filename from HR image", "lr": "Use filename from LR image", "keep": "Keep the filenames from th HR and LR images"}[args.filename])
-    print("File name prefix".ljust(SPACING), args.prefix)
-    print("File name suffix".ljust(SPACING), args.suffix)
-    print("Limit".ljust(SPACING), args.limit)
-    print("Save hash tables".ljust(SPACING), args.save)
-    print("Debug mode".ljust(SPACING), args.debug, {True: "(threading will be disabled)", False: ""}[args.debug])
-    print("Dry run".ljust(SPACING), args.dry)
+    HASH_SIZE = 8
+    HASH_SIZE_ALIGNED = 16
 
-    print("--------------------")
+    DISTANCE_THRESHOLD_MATCH = 12
+    DISTANCE_THRESHOLD_ALIGNED = int((HASH_SIZE_ALIGNED ** 2) * (1 - (opt_threshold / 100)) + 0.5) # 360
+
+    print("Path to HR images".ljust(SPACING), ":", args.hr)
+    print("Path to LR images".ljust(SPACING), ":", args.lr)
+    print("Destination path".ljust(SPACING), ":", args.dest)
+    print("Output".ljust(SPACING), ":", {"hr": "hr (HR Images)", "lr": "lr (LR images)", "all": "all (LR and HR images)"}[args.output])
+    print("Threshold".ljust(SPACING), args.threshold)
+    print("Scale".ljust(SPACING), ":", args.scale)
+    print("Crop".ljust(SPACING), ":", args.crop)
+    print("Method".ljust(SPACING), ":", args.method)
+    print("Color transfer".ljust(SPACING), ":", args.color_transfer)
+    print("Filename".ljust(SPACING), ":", {"hr": "Use filename from HR image", "lr": "Use filename from LR image", "keep": "Keep the filenames from th HR and LR images"}[args.filename])
+    print("File name prefix".ljust(SPACING), ":", args.prefix)
+    print("File name suffix".ljust(SPACING), ":", args.suffix)
+    print("Limit".ljust(SPACING), ":", args.limit)
+    print("Save hash tables".ljust(SPACING), ":", args.save)
+    print("Debug mode".ljust(SPACING), ":", args.debug, {True: "(threading will be disabled)", False: ""}[args.debug])
+    print("Dry run".ljust(SPACING), ":", args.dry)
+
+    print("-----")
 
     if not ask("Continue?", True):
         sys.exit()
@@ -638,7 +675,7 @@ if __name__ == "__main__":
     #
     if not lr_items:
         with ThreadPoolExecutor(max_workers=8) as executor:
-            futures = {executor.submit(process_file, os.path.join(opt_lr, file), lr_items, False) for file in os.listdir(opt_lr)}
+            futures = {executor.submit(process_file, os.path.join(opt_lr, file), lr_items, False, blur=False) for file in os.listdir(opt_lr)}
             kwargs = {
                 "desc": "Generating hashes for LR images",
                 "total": len(futures),
@@ -674,6 +711,28 @@ if __name__ == "__main__":
 
     count = 0
 
+    if opt_report:
+        report = {
+            "options": {
+                "hr": opt_hr,
+                "lr": opt_lr,
+                "dest": opt_dest,
+                "output": opt_output,
+                "scale": opt_scale,
+                "crop": opt_crop,
+                "method": opt_method,
+                "color_transfer": opt_color_transfer,
+                "filename": opt_filename,
+                "prefix": opt_prefix,
+                "suffix": opt_suffix,
+                "limit": opt_limit,
+                "save": opt_save,
+                "debug": opt_debug,
+                "dry": opt_dry
+            },
+            "images": []
+        }
+
     if not opt_debug:
         with ThreadPoolExecutor(max_workers=8) as executor:
             futures = {executor.submit(find_image_match, hr_item) for hr_item in hr_items}
@@ -689,8 +748,11 @@ if __name__ == "__main__":
             try:
                 for f in progress:
                     try:
-                        result = f.result()
-                        count += result
+                        result_count, result_report = f.result()
+                        count += result_count
+
+                        if result_report:
+                            report["images"].append(result_report)
 
                         progress.set_description(f"{info}: {count} -")
 
@@ -723,8 +785,11 @@ if __name__ == "__main__":
             progress.set_description(f"{info}: {count} -")
 
             for hr_item in progress:
-                result = find_image_match(hr_item)
-                count += result
+                result_count, result_report = find_image_match(hr_item)
+                count += result_count
+
+                if result_report:
+                    report["images"].append(result_report)
 
                 progress.set_description(f"{info}: {count} -")
 
@@ -738,6 +803,10 @@ if __name__ == "__main__":
         except KeyboardInterrupt:
             print("User interrupt, exiting...")
             sys.exit()
+
+if opt_report:
+    with open(os.path.join(opt_dest, f"twimager_report.json"), "w", encoding="utf8") as f:
+        json.dump(report, f, indent=4)
 
 if not opt_dry:
     print(f"Done, aligned image count: {len(os.listdir(opt_dest_lr))}")
