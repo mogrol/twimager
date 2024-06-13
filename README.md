@@ -52,7 +52,7 @@ If the `--report` argument was used when running Twimager, this script can be us
 
 ### Usage
 ```
-python twimager-review --report <path to report json file>
+python twimager-review.py --report <path to report json file>
 ```
 
 ### Options
