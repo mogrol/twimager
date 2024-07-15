@@ -59,7 +59,7 @@ python twimager-review.py --report <path to report json file>
 
 | Argument | Description |
 |:-|:-|
-| &#x2011;&#x2011;report | Path to the report files. |
+| &#x2011;&#x2011;report | Path to the report file to use. |
 | &#x2011;&#x2011;scale | Preview scale (based on the HR image size) (default: `1.0`) |
 | &#x2011;&#x2011;algorithm | Algorithm to use when images are scaled, cubic, lanczos or area (default: `lanczos`) |
 
