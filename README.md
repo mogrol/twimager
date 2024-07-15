@@ -19,7 +19,7 @@ cd twimager
 pip install -r requirements.txt
 ```
 
-### Usage, simple
+### Usage
 
 ```
 python twimager.py --lr <path to lr (reference) images folder> --hr <path to hr (target) images folder> --dest <path to destination folder>
@@ -72,4 +72,4 @@ In no particular order.
 Thanks to Dr. Neal Krawetz for the articles about [perceptual hashing](https://www.hackerfactor.com/blog/index.php?/archives/432-Looks-Like-It.html), Johannes Buchner for [ImageHash](https://github.com/JohannesBuchner/imagehash), Rickard Sjögren for [VP-Tree](https://github.com/RickardSjogren/vptree), Adrian Rosebrock at [pyimagesearch](https://pyimagesearch.com/) for the articles on image matching and alignment (registration) and the [OpenCV Team](https://opencv.org/)
 
 ### License
-[MIT](https://github.com/mogrol/twimager/LICENSE)
+[MIT](https://github.com/mogrol/twimager/blob/master/LICENSE)
